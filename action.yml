@@ -1,0 +1,134 @@
+name: "TestNod Uploader"
+description: "Upload JUnit XML test results to TestNod for tracking, flaky test detection, and alerting."
+branding:
+  icon: "upload-cloud"
+  color: "blue"
+
+inputs:
+  token:
+    description: "TestNod API token for authentication."
+    required: true
+  file:
+    description: "Path to the JUnit XML file to upload."
+    required: true
+  tags:
+    description: "Comma-separated list of tags to attach to the upload."
+    required: false
+    default: ""
+  ignore-failures:
+    description: "If true, the action will not fail the workflow when the upload encounters an error."
+    required: false
+    default: "false"
+  uploader-version:
+    description: "Version of the TestNod uploader binary to download. Defaults to 'latest'."
+    required: false
+    default: "latest"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Determine platform and architecture
+      id: platform
+      shell: bash
+      run: |
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+
+        case "$OS" in
+          linux)  PLATFORM="linux" ;;
+          darwin) PLATFORM="darwin" ;;
+          mingw*|msys*|cygwin*) PLATFORM="windows" ;;
+          *)
+            echo "::error::Unsupported OS: $OS"
+            exit 1
+            ;;
+        esac
+
+        case "$ARCH" in
+          x86_64|amd64)  ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *)
+            echo "::error::Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+        esac
+
+        EXTENSION=""
+        if [ "$PLATFORM" = "windows" ]; then
+          EXTENSION=".exe"
+        fi
+
+        BINARY_NAME="testnod-uploader-${PLATFORM}-${ARCH}${EXTENSION}"
+
+        echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+        echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
+        echo "extension=$EXTENSION" >> "$GITHUB_OUTPUT"
+        echo "binary-name=$BINARY_NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Restore cached binary
+      if: inputs.uploader-version != 'latest'
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/testnod-uploader
+        key: testnod-uploader-${{ inputs.uploader-version }}-${{ steps.platform.outputs.platform }}-${{ steps.platform.outputs.arch }}
+
+    - name: Download TestNod uploader
+      if: inputs.uploader-version == 'latest' || steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        UPLOADER_VERSION: ${{ inputs.uploader-version }}
+        BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
+      run: |
+        DOWNLOAD_URL="https://releases.testnod.com/testnod-uploader/${UPLOADER_VERSION}/${BINARY_NAME}"
+        DEST_DIR="${RUNNER_TEMP}/testnod-uploader"
+
+        mkdir -p "$DEST_DIR"
+
+        echo "Downloading TestNod uploader from ${DOWNLOAD_URL}"
+        curl -fsSL --retry 3 --retry-delay 5 -o "${DEST_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"
+        chmod +x "${DEST_DIR}/${BINARY_NAME}"
+
+    - name: Run TestNod uploader
+      shell: bash
+      env:
+        TESTNOD_TOKEN: ${{ inputs.token }}
+        TESTNOD_FILE: ${{ inputs.file }}
+        TESTNOD_TAGS: ${{ inputs.tags }}
+        TESTNOD_IGNORE_FAILURES: ${{ inputs.ignore-failures }}
+        BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        COMMIT_SHA: ${{ github.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        BUILD_ID: ${{ github.run_id }}
+      run: |
+        BINARY_PATH="${RUNNER_TEMP}/testnod-uploader/${BINARY_NAME}"
+
+        ARGS=(
+          -token="$TESTNOD_TOKEN"
+          -branch="$BRANCH"
+          -commit-sha="$COMMIT_SHA"
+          -run-url="$RUN_URL"
+          -build-id="$BUILD_ID"
+        )
+
+        # Split comma-separated tags into individual -tag flags
+        if [ -n "$TESTNOD_TAGS" ]; then
+          IFS=',' read -ra TAG_ARRAY <<< "$TESTNOD_TAGS"
+          for tag in "${TAG_ARRAY[@]}"; do
+            tag=$(echo "$tag" | xargs)  # trim whitespace
+            if [ -n "$tag" ]; then
+              ARGS+=(-tag="$tag")
+            fi
+          done
+        fi
+
+        if [ "$TESTNOD_IGNORE_FAILURES" = "true" ]; then
+          ARGS+=(-ignore-failures)
+        fi
+
+        # File path is a positional argument, not a flag
+        ARGS+=("$TESTNOD_FILE")
+
+        echo "Running TestNod uploader..."
+        "$BINARY_PATH" "${ARGS[@]}"
