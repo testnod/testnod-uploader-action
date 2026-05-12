@@ -59,7 +59,7 @@ jobs:
           ignore-failures: true
 ```
 
-Note the `if: ${{ !cancelled() }}` condition on the upload step. By default, GitHub Actions skips subsequent steps when a previous step fails, so without this condition, test failures would prevent the upload. Using `!cancelled()` ensures the upload runs when tests pass or fail, but still skips if the workflow is cancelled or a step before the test run fails.
+Note the `if: ${{ !cancelled() }}` condition on the upload step. By default, GitHub Actions skips subsequent steps when a previous step fails, so without this condition, test failures would prevent the upload. Using `!cancelled()` ensures the upload runs when tests pass or fail, and skips if the workflow is cancelled. If a step before the tests fails and the JUnit XML file is never produced, the action detects the missing file, logs a warning, and skips the upload rather than failing the workflow.
 
 ### Matrix builds
 

@@ -36,9 +36,21 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Check test results file
+      id: check-file
+      if: inputs.finalize != 'only' && inputs.file != ''
+      shell: bash
+      env:
+        TESTNOD_FILE: ${{ inputs.file }}
+      run: |
+        if [ ! -f "$TESTNOD_FILE" ]; then
+          echo "::warning::Test results file '$TESTNOD_FILE' not found — skipping TestNod upload. This usually means a step before the tests failed."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Determine platform and architecture
       id: platform
-      if: inputs.finalize != 'only'
+      if: inputs.finalize != 'only' && steps.check-file.outputs.skip != 'true'
       shell: bash
       run: |
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -76,7 +88,7 @@ runs:
         echo "binary-name=$BINARY_NAME" >> "$GITHUB_OUTPUT"
 
     - name: Restore cached binary
-      if: inputs.finalize != 'only' && inputs.uploader-version != 'latest'
+      if: inputs.finalize != 'only' && inputs.uploader-version != 'latest' && steps.check-file.outputs.skip != 'true'
       id: cache
       uses: actions/cache@v4
       with:
@@ -84,7 +96,7 @@ runs:
         key: testnod-uploader-${{ inputs.uploader-version }}-${{ steps.platform.outputs.platform }}-${{ steps.platform.outputs.arch }}
 
     - name: Download TestNod uploader
-      if: inputs.finalize != 'only' && (inputs.uploader-version == 'latest' || steps.cache.outputs.cache-hit != 'true')
+      if: inputs.finalize != 'only' && (inputs.uploader-version == 'latest' || steps.cache.outputs.cache-hit != 'true') && steps.check-file.outputs.skip != 'true'
       shell: bash
       env:
         UPLOADER_VERSION: ${{ inputs.uploader-version }}
@@ -100,6 +112,7 @@ runs:
         chmod +x "${DEST_DIR}/${BINARY_NAME}"
 
     - name: Run TestNod uploader
+      if: steps.check-file.outputs.skip != 'true'
       shell: bash
       env:
         TESTNOD_TOKEN: ${{ inputs.token }}
