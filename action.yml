@@ -9,8 +9,9 @@ inputs:
     description: "TestNod API token for authentication."
     required: true
   file:
-    description: "Path to the JUnit XML file to upload."
-    required: true
+    description: "Path to the JUnit XML file to upload. Required unless finalize=only."
+    required: false
+    default: ""
   tags:
     description: "Comma-separated list of tags to attach to the upload."
     required: false
@@ -23,12 +24,21 @@ inputs:
     description: "Version of the TestNod uploader binary to download. Defaults to 'latest'."
     required: false
     default: "latest"
+  build-id:
+    description: "Build identifier used to group parallel/matrix shards into one logical test run. Defaults to github.run_id."
+    required: false
+    default: ""
+  finalize:
+    description: "When to call TestNod's finalize endpoint. 'true' (default) uploads then finalizes — right for single-job workflows. 'false' uploads only — use on per-shard steps in a matrix. 'only' skips upload and just finalizes — use in a separate aggregate job that runs after all matrix shards complete."
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
   steps:
     - name: Determine platform and architecture
       id: platform
+      if: inputs.finalize != 'only'
       shell: bash
       run: |
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -66,7 +76,7 @@ runs:
         echo "binary-name=$BINARY_NAME" >> "$GITHUB_OUTPUT"
 
     - name: Restore cached binary
-      if: inputs.uploader-version != 'latest'
+      if: inputs.finalize != 'only' && inputs.uploader-version != 'latest'
       id: cache
       uses: actions/cache@v4
       with:
@@ -74,7 +84,7 @@ runs:
         key: testnod-uploader-${{ inputs.uploader-version }}-${{ steps.platform.outputs.platform }}-${{ steps.platform.outputs.arch }}
 
     - name: Download TestNod uploader
-      if: inputs.uploader-version == 'latest' || steps.cache.outputs.cache-hit != 'true'
+      if: inputs.finalize != 'only' && (inputs.uploader-version == 'latest' || steps.cache.outputs.cache-hit != 'true')
       shell: bash
       env:
         UPLOADER_VERSION: ${{ inputs.uploader-version }}
@@ -96,39 +106,80 @@ runs:
         TESTNOD_FILE: ${{ inputs.file }}
         TESTNOD_TAGS: ${{ inputs.tags }}
         TESTNOD_IGNORE_FAILURES: ${{ inputs.ignore-failures }}
+        BUILD_ID_INPUT: ${{ inputs.build-id }}
+        FINALIZE_MODE: ${{ inputs.finalize }}
         BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
         BRANCH: ${{ github.head_ref || github.ref_name }}
         COMMIT_SHA: ${{ github.sha }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        BUILD_ID: ${{ github.run_id }}
       run: |
-        BINARY_PATH="${RUNNER_TEMP}/testnod-uploader/${BINARY_NAME}"
+        case "$FINALIZE_MODE" in
+          true|false|only) ;;
+          *)
+            echo "::error::Invalid 'finalize' value: '${FINALIZE_MODE}'. Must be 'true', 'false', or 'only'."
+            exit 1
+            ;;
+        esac
 
-        ARGS=(
-          -token="$TESTNOD_TOKEN"
-          -branch="$BRANCH"
-          -commit-sha="$COMMIT_SHA"
-          -run-url="$RUN_URL"
-          -build-id="$BUILD_ID"
-        )
+        EFFECTIVE_BUILD_ID="${BUILD_ID_INPUT:-$GITHUB_RUN_ID}"
 
-        # Split comma-separated tags into individual -tag flags
-        if [ -n "$TESTNOD_TAGS" ]; then
-          IFS=',' read -ra TAG_ARRAY <<< "$TESTNOD_TAGS"
-          for tag in "${TAG_ARRAY[@]}"; do
-            tag=$(echo "$tag" | xargs)  # trim whitespace
-            if [ -n "$tag" ]; then
-              ARGS+=(-tag="$tag")
+        if [ "$FINALIZE_MODE" != "only" ]; then
+          if [ -z "$TESTNOD_FILE" ]; then
+            echo "::error::'file' input is required unless finalize=only."
+            exit 1
+          fi
+
+          BINARY_PATH="${RUNNER_TEMP}/testnod-uploader/${BINARY_NAME}"
+
+          ARGS=(
+            -token="$TESTNOD_TOKEN"
+            -branch="$BRANCH"
+            -commit-sha="$COMMIT_SHA"
+            -run-url="$RUN_URL"
+            -build-id="$EFFECTIVE_BUILD_ID"
+          )
+
+          # Split comma-separated tags into individual -tag flags
+          if [ -n "$TESTNOD_TAGS" ]; then
+            IFS=',' read -ra TAG_ARRAY <<< "$TESTNOD_TAGS"
+            for tag in "${TAG_ARRAY[@]}"; do
+              tag=$(echo "$tag" | xargs)  # trim whitespace
+              if [ -n "$tag" ]; then
+                ARGS+=(-tag="$tag")
+              fi
+            done
+          fi
+
+          if [ "$TESTNOD_IGNORE_FAILURES" = "true" ]; then
+            ARGS+=(-ignore-failures)
+          fi
+
+          # File path is a positional argument, not a flag
+          ARGS+=("$TESTNOD_FILE")
+
+          echo "Running TestNod uploader..."
+          "$BINARY_PATH" "${ARGS[@]}"
+        fi
+
+        if [ "$FINALIZE_MODE" = "true" ] || [ "$FINALIZE_MODE" = "only" ]; then
+          BASE_URL="${TESTNOD_BASE_URL:-https://testnod.com}"
+          echo "Finalizing TestNod test run for build ${EFFECTIVE_BUILD_ID}..."
+
+          HTTP_CODE=$(curl -sS -o /tmp/testnod-finalize.body -w "%{http_code}" \
+            --retry 3 --retry-delay 2 --retry-connrefused \
+            -X POST "${BASE_URL}/integrations/test_runs/finalize" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -H "Project-Token: ${TESTNOD_TOKEN}" \
+            -d "{\"build_id\":\"${EFFECTIVE_BUILD_ID}\"}")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            BODY=$(cat /tmp/testnod-finalize.body 2>/dev/null || true)
+            echo "::warning::Finalize returned HTTP ${HTTP_CODE}: ${BODY}"
+            if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
+              exit 1
             fi
-          done
+          else
+            echo "Test run finalized."
+          fi
         fi
-
-        if [ "$TESTNOD_IGNORE_FAILURES" = "true" ]; then
-          ARGS+=(-ignore-failures)
-        fi
-
-        # File path is a positional argument, not a flag
-        ARGS+=("$TESTNOD_FILE")
-
-        echo "Running TestNod uploader..."
-        "$BINARY_PATH" "${ARGS[@]}"
