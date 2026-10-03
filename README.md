@@ -122,6 +122,8 @@ uploader-version: v0.0.6
 
 Every downloaded uploader binary is checked against the SHA-256 checksum published in that release's `checksums.txt`. If the checksum is missing or doesn't match, the binary is deleted and never run. The step fails, or with `ignore-failures: true`, logs a warning and skips the upload.
 
+With `uploader-version: latest`, the action first looks up the current version number and then downloads that version's binary and checksums, so the two always come from the same release.
+
 ## CI metadata
 
 The action automatically attaches the following metadata from the GitHub Actions environment to each upload:

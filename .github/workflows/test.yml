@@ -65,7 +65,7 @@ jobs:
 
       - name: "Check: upload and finalize"
         env:
-          BINARY: ${{ runner.temp }}/testnod-uploader/testnod-uploader-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+          BINARY: ${{ runner.temp }}/testnod-uploader/${{ env.UPLOADER_VERSION }}/testnod-uploader-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
         run: |
           test -f "$BINARY" || { echo "::error::Expected uploader binary at $BINARY"; exit 1; }
           python test/expect.py \
@@ -241,12 +241,18 @@ jobs:
           file: test/fixtures/results.xml
 
       - name: "Check: latest version"
-        run: python test/expect.py --count upload=1 --count presigned=1 --count finalize=1
+        run: |
+          python test/expect.py --count upload=1 --count presigned=1 --count finalize=1
+          # "latest" is resolved to a concrete version before downloading
+          if [ -e "${RUNNER_TEMP}/testnod-uploader/latest" ]; then
+            echo "::error::Expected 'latest' to be stored under its resolved version, not in a 'latest' directory"
+            exit 1
+          fi
 
   # The integration job saved the pinned binary to the cache when it finished
   cache:
     name: cache (${{ matrix.runner }})
-    needs: integration
+    needs: [integration, download]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -261,10 +267,29 @@ jobs:
       - name: Check the binary is cached under the expected key
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/testnod-uploader
+          path: ${{ runner.temp }}/testnod-uploader/${{ env.UPLOADER_VERSION }}
           key: testnod-uploader-${{ env.UPLOADER_VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
           lookup-only: true
           fail-on-cache-miss: true
+
+      # The download job ran a failed download, then "latest", in the same job.
+      # Nothing should be cached for the version that failed.
+      - name: Look up cache for the version that doesn't exist
+        id: missing-version-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/testnod-uploader/v0.0.0-does-not-exist
+          key: testnod-uploader-v0.0.0-does-not-exist-${{ matrix.platform }}-${{ matrix.arch }}
+          lookup-only: true
+
+      - name: "Check: nothing cached for the version that doesn't exist"
+        env:
+          CACHE_HIT: ${{ steps.missing-version-cache.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "::error::Found a cached binary for a version that doesn't exist"
+            exit 1
+          fi
 
       - name: "Scenario: upload with cached binary"
         uses: ./
