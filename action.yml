@@ -104,23 +104,52 @@ runs:
         BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
         TESTNOD_IGNORE_FAILURES: ${{ inputs.ignore-failures }}
       run: |
-        DOWNLOAD_URL="https://releases.testnod.com/testnod-uploader/${UPLOADER_VERSION}/${BINARY_NAME}"
+        RELEASE_URL="https://releases.testnod.com/testnod-uploader/${UPLOADER_VERSION}"
+        DOWNLOAD_URL="${RELEASE_URL}/${BINARY_NAME}"
+        CHECKSUMS_URL="${RELEASE_URL}/checksums.txt"
         DEST_DIR="${RUNNER_TEMP}/testnod-uploader"
+
+        # Removes the directory so actions/cache doesn't save a partial or unverified
+        # binary, then fails the step or skips the upload depending on ignore-failures.
+        fail_download() {
+          rm -rf "$DEST_DIR"
+          if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
+            echo "::error::$1"
+            exit 1
+          fi
+          echo "::warning::$1 Skipping TestNod upload."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
 
         mkdir -p "$DEST_DIR"
 
         echo "Downloading TestNod uploader from ${DOWNLOAD_URL}"
         if ! curl -fsSL --retry 3 --retry-delay 5 -o "${DEST_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
-          # Remove the directory so actions/cache doesn't save a partial or empty download
-          rm -rf "$DEST_DIR"
-          if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
-            echo "::error::Failed to download TestNod uploader from ${DOWNLOAD_URL}."
-            exit 1
-          fi
-          echo "::warning::Failed to download TestNod uploader from ${DOWNLOAD_URL} — skipping TestNod upload."
-          echo "skip=true" >> "$GITHUB_OUTPUT"
-          exit 0
+          fail_download "Failed to download TestNod uploader from ${DOWNLOAD_URL}."
         fi
+
+        if ! CHECKSUMS=$(curl -fsSL --retry 3 --retry-delay 5 "$CHECKSUMS_URL"); then
+          fail_download "Failed to download checksums from ${CHECKSUMS_URL}."
+        fi
+
+        EXPECTED_SHA=$(echo "$CHECKSUMS" | awk -v name="$BINARY_NAME" '$2 == name { print $1 }')
+        if [ -z "$EXPECTED_SHA" ]; then
+          fail_download "No checksum for ${BINARY_NAME} in ${CHECKSUMS_URL}."
+        fi
+
+        # sha256sum ships with Linux and Git Bash on Windows; macOS has shasum instead
+        if command -v sha256sum >/dev/null 2>&1; then
+          ACTUAL_SHA=$(sha256sum "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
+        else
+          ACTUAL_SHA=$(shasum -a 256 "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
+        fi
+
+        if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+          fail_download "Checksum mismatch for ${BINARY_NAME}: expected ${EXPECTED_SHA}, got ${ACTUAL_SHA}."
+        fi
+
+        echo "Verified SHA-256 checksum for ${BINARY_NAME}."
         chmod +x "${DEST_DIR}/${BINARY_NAME}"
 
     - name: Run TestNod uploader
