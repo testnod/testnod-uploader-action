@@ -176,9 +176,10 @@ runs:
 
         if [ "$FINALIZE_MODE" = "true" ] || [ "$FINALIZE_MODE" = "only" ]; then
           BASE_URL="${TESTNOD_BASE_URL:-https://testnod.com}"
+          FINALIZE_BODY="${RUNNER_TEMP}/testnod-finalize.body"
           echo "Finalizing TestNod test run for build ${EFFECTIVE_BUILD_ID}..."
 
-          HTTP_CODE=$(curl -sS -o /tmp/testnod-finalize.body -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS -o "$FINALIZE_BODY" -w "%{http_code}" \
             --retry 3 --retry-delay 2 --retry-connrefused \
             -X POST "${BASE_URL}/integrations/test_runs/finalize" \
             -H "Content-Type: application/json" \
@@ -193,7 +194,7 @@ runs:
               exit 1
             fi
           elif [[ "$HTTP_CODE" != 2?? ]]; then
-            BODY=$(cat /tmp/testnod-finalize.body 2>/dev/null || true)
+            BODY=$(cat "$FINALIZE_BODY" 2>/dev/null || true)
             echo "::warning::Finalize returned HTTP ${HTTP_CODE}: ${BODY}"
             if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
               exit 1
