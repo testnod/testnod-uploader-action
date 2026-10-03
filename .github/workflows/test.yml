@@ -1,0 +1,302 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Every scenario talks to the mock server from test/mock_server.py, never testnod.com.
+  # Both the uploader binary and the action's finalize step read this variable.
+  TESTNOD_BASE_URL: http://127.0.0.1:8765
+  UPLOADER_VERSION: v0.0.6
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install actionlint
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+
+      - name: Lint workflows
+        run: ./actionlint -color
+
+      - name: ShellCheck action.yml run blocks
+        run: bash test/shellcheck-action.sh action.yml
+
+  integration:
+    name: integration (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: &platforms
+        include:
+          - { runner: ubuntu-latest,    platform: linux,   arch: amd64, ext: "" }
+          - { runner: ubuntu-24.04-arm, platform: linux,   arch: arm64, ext: "" }
+          - { runner: macos-15-intel,   platform: darwin,  arch: amd64, ext: "" }
+          - { runner: macos-latest,     platform: darwin,  arch: arm64, ext: "" }
+          - { runner: windows-latest,   platform: windows, arch: amd64, ext: ".exe" }
+          - { runner: windows-11-arm,   platform: windows, arch: arm64, ext: ".exe" }
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_BRANCH: ${{ github.head_ref || github.ref_name }}
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      EXPECTED_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./test/setup
+
+      # Upload then finalize (the default)
+      - name: "Scenario: upload and finalize"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          tags: " ci , rspec,,nightly"
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: upload and finalize"
+        env:
+          BINARY: ${{ runner.temp }}/testnod-uploader/${{ env.UPLOADER_VERSION }}/testnod-uploader-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+        run: |
+          test -f "$BINARY" || { echo "::error::Expected uploader binary at $BINARY"; exit 1; }
+          python test/expect.py \
+            --count upload=1 --count presigned=1 --count finalize=1 --count upload_failed=0 \
+            --equals "upload.headers.project-token=test-token" \
+            --equals 'upload.body.tags=[{"value": "ci"}, {"value": "rspec"}, {"value": "nightly"}]' \
+            --equals "upload.body.test_run.metadata.branch=${EXPECTED_BRANCH}" \
+            --equals "upload.body.test_run.metadata.commit_sha=${EXPECTED_SHA}" \
+            --equals "upload.body.test_run.metadata.run_url=${EXPECTED_RUN_URL}" \
+            --equals "upload.body.test_run.metadata.build_id=${GITHUB_RUN_ID}" \
+            --body-file presigned=test/fixtures/results.xml \
+            --equals "finalize.headers.project-token=test-token" \
+            --equals "finalize.body.build_id=${GITHUB_RUN_ID}"
+
+      # Matrix shard: upload only, custom build ID
+      - name: Reset mock server
+        run: curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+
+      - name: "Scenario: finalize false"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          build-id: shard-build
+          finalize: "false"
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: finalize false"
+        run: |
+          python test/expect.py \
+            --count upload=1 --count presigned=1 --count finalize=0 \
+            --equals "upload.body.test_run.metadata.build_id=shard-build"
+
+      # Aggregate job: finalize only, no file and no download
+      - name: Reset mock server
+        run: curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+
+      - name: "Scenario: finalize only"
+        uses: ./
+        with:
+          token: test-token
+          build-id: shard-build
+          finalize: only
+
+      - name: "Check: finalize only"
+        run: |
+          python test/expect.py \
+            --count upload=0 --count presigned=0 --count finalize=1 \
+            --equals "finalize.body.build_id=shard-build"
+
+      # Results file never produced: warn and skip, don't fail
+      - name: Reset mock server
+        run: curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+
+      - name: "Scenario: missing results file"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/does-not-exist.xml
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: missing results file"
+        run: python test/expect.py --count upload=0 --count finalize=0
+
+      # Server errors fail the step...
+      - name: Make mock server return 500
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST -d '{"status": 500}' "${TESTNOD_BASE_URL}/__fail"
+
+      - name: "Scenario: server error"
+        id: server-error
+        continue-on-error: true
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: server error"
+        env:
+          OUTCOME: ${{ steps.server-error.outcome }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got '$OUTCOME'"; exit 1; }
+          # The step stops after the failed upload, before finalize
+          python test/expect.py --at-least upload=1 --count finalize=0
+
+      # ...unless ignore-failures is set, which also covers the finalize error
+      - name: Make mock server return 500
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST -d '{"status": 500}' "${TESTNOD_BASE_URL}/__fail"
+
+      - name: "Scenario: server error with ignore-failures"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          ignore-failures: "true"
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: server error with ignore-failures"
+        run: python test/expect.py --at-least upload=1 --at-least finalize=1
+
+      # Finalize can't reach the server at all
+      - name: "Scenario: unreachable server"
+        id: unreachable
+        continue-on-error: true
+        uses: ./
+        env:
+          TESTNOD_BASE_URL: http://127.0.0.1:9
+        with:
+          token: test-token
+          finalize: only
+
+      - name: "Scenario: unreachable server with ignore-failures"
+        uses: ./
+        env:
+          TESTNOD_BASE_URL: http://127.0.0.1:9
+        with:
+          token: test-token
+          finalize: only
+          ignore-failures: "true"
+
+      - name: "Check: unreachable server"
+        env:
+          OUTCOME: ${{ steps.unreachable.outcome }}
+        run: '[ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got ''$OUTCOME''"; exit 1; }'
+
+  # Kept out of the integration job: a failed download deletes the uploader
+  # directory, which would stop that job from saving the binary to the cache
+  download:
+    name: download (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: *platforms
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./test/setup
+
+      - name: "Scenario: version that doesn't exist"
+        id: missing-version
+        continue-on-error: true
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: v0.0.0-does-not-exist
+
+      - name: "Scenario: version that doesn't exist with ignore-failures"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: v0.0.0-does-not-exist
+          ignore-failures: "true"
+
+      - name: "Check: version that doesn't exist"
+        env:
+          OUTCOME: ${{ steps.missing-version.outcome }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got '$OUTCOME'"; exit 1; }
+          python test/expect.py --count upload=0 --count finalize=0
+
+      - name: "Scenario: latest version"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+
+      - name: "Check: latest version"
+        run: |
+          python test/expect.py --count upload=1 --count presigned=1 --count finalize=1
+          # "latest" is resolved to a concrete version before downloading
+          if [ -e "${RUNNER_TEMP}/testnod-uploader/latest" ]; then
+            echo "::error::Expected 'latest' to be stored under its resolved version, not in a 'latest' directory"
+            exit 1
+          fi
+
+  # The integration job saved the pinned binary to the cache when it finished
+  cache:
+    name: cache (${{ matrix.runner }})
+    needs: [integration, download]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: *platforms
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./test/setup
+
+      - name: Check the binary is cached under the expected key
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/testnod-uploader/${{ env.UPLOADER_VERSION }}
+          key: testnod-uploader-${{ env.UPLOADER_VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+      # The download job ran a failed download, then "latest", in the same job.
+      # Nothing should be cached for the version that failed.
+      - name: Look up cache for the version that doesn't exist
+        id: missing-version-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/testnod-uploader/v0.0.0-does-not-exist
+          key: testnod-uploader-v0.0.0-does-not-exist-${{ matrix.platform }}-${{ matrix.arch }}
+          lookup-only: true
+
+      - name: "Check: nothing cached for the version that doesn't exist"
+        env:
+          CACHE_HIT: ${{ steps.missing-version-cache.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "::error::Found a cached binary for a version that doesn't exist"
+            exit 1
+          fi
+
+      - name: "Scenario: upload with cached binary"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: upload with cached binary"
+        run: python test/expect.py --count upload=1 --count presigned=1 --count finalize=1

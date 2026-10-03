@@ -1,0 +1,28 @@
+name: "Set up action tests"
+description: "Installs Python and starts the mock TestNod server from test/mock_server.py on 127.0.0.1:8765."
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.13"
+
+    - name: Start mock TestNod server
+      shell: bash
+      run: |
+        # Redirect every stdio stream so the background server doesn't hold the
+        # step's output pipes open, which would make the step hang on Windows
+        python test/mock_server.py < /dev/null > "${RUNNER_TEMP}/mock-server.log" 2>&1 &
+
+        for _ in $(seq 1 30); do
+          if curl -fsS http://127.0.0.1:8765/__requests > /dev/null 2>&1; then
+            echo "Mock TestNod server is up."
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "::error::Mock TestNod server didn't start."
+        cat "${RUNNER_TEMP}/mock-server.log"
+        exit 1
