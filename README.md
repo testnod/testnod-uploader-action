@@ -22,7 +22,7 @@ Upload JUnit XML test results to [TestNod](https://testnod.com) directly from yo
     file: test-reports/junit.xml
     tags: ci,github-actions,rspec
     ignore-failures: true
-    uploader-version: v0.0.1
+    uploader-version: v0.0.4
 ```
 
 ### Full workflow example
@@ -38,7 +38,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -73,7 +73,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./run-tests.sh --shard ${{ matrix.shard }} --out results.xml
       - name: Upload shard results
         if: ${{ !cancelled() }}
@@ -104,7 +104,7 @@ For single-job workflows the default `finalize: true` is correct — no extra st
 | `file` | Conditional | `""` | Path to the JUnit XML file to upload. Required unless `finalize: only`. |
 | `tags` | No | `""` | Comma-separated tags to attach to the upload (e.g., `ci,rspec,nightly`). |
 | `ignore-failures` | No | `false` | When `true`, upload and finalize errors won't fail the workflow step. |
-| `uploader-version` | No | `latest` | Pin a specific uploader version (e.g., `v0.0.1`). Pinned versions are cached across runs. |
+| `uploader-version` | No | `latest` | Pin a specific uploader version (e.g., `v0.0.4`). Pinned versions are cached across runs. |
 | `build-id` | No | `github.run_id` | Build identifier used to group parallel/matrix shards into one logical test run. |
 | `finalize` | No | `true` | When to call TestNod's finalize endpoint. `true` = upload then finalize (default, right for single-job workflows). `false` = upload only (use on per-shard matrix steps). `only` = skip upload, just finalize (use in an aggregate job after matrix shards finish). |
 
@@ -115,7 +115,7 @@ The action caches the uploader binary when `uploader-version` is set to a specif
 If download speed matters in your workflow, pin to a specific version:
 
 ```yaml
-uploader-version: v0.0.1
+uploader-version: v0.0.4
 ```
 
 ## CI metadata
