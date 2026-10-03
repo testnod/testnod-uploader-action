@@ -123,7 +123,7 @@ uploader-version: v0.0.4
 The action automatically attaches the following metadata from the GitHub Actions environment to each upload:
 
 - **Branch**: The source branch
-- **Commit SHA**: The commit that triggered the workflow
+- **Commit SHA**: The commit that triggered the workflow (for pull requests, the head commit of the PR branch rather than GitHub's temporary merge commit)
 - **Run URL**: Direct link back to the GitHub Actions run
 - **Build ID**: The workflow run ID (override with the `build-id` input to group multiple workflows under one logical run)
 

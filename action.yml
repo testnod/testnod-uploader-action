@@ -123,7 +123,7 @@ runs:
         FINALIZE_MODE: ${{ inputs.finalize }}
         BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
         BRANCH: ${{ github.head_ref || github.ref_name }}
-        COMMIT_SHA: ${{ github.sha }}
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         case "$FINALIZE_MODE" in
