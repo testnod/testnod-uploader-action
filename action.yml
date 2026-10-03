@@ -90,7 +90,7 @@ runs:
     - name: Restore cached binary
       if: inputs.finalize != 'only' && inputs.uploader-version != 'latest' && steps.check-file.outputs.skip != 'true'
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/testnod-uploader
         key: testnod-uploader-${{ inputs.uploader-version }}-${{ steps.platform.outputs.platform }}-${{ steps.platform.outputs.arch }}
