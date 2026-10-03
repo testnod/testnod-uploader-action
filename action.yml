@@ -184,9 +184,15 @@ runs:
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             -H "Project-Token: ${TESTNOD_TOKEN}" \
-            -d "{\"build_id\":\"${EFFECTIVE_BUILD_ID}\"}")
+            -d "{\"build_id\":\"${EFFECTIVE_BUILD_ID}\"}") || true
 
-          if [ "$HTTP_CODE" != "200" ]; then
+          if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+            # curl couldn't get a response at all (DNS failure, connection refused, timeout)
+            echo "::warning::Finalize request to ${BASE_URL} failed: no response from server."
+            if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
+              exit 1
+            fi
+          elif [ "$HTTP_CODE" != "200" ]; then
             BODY=$(cat /tmp/testnod-finalize.body 2>/dev/null || true)
             echo "::warning::Finalize returned HTTP ${HTTP_CODE}: ${BODY}"
             if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
