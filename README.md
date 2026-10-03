@@ -138,3 +138,18 @@ The action automatically attaches the following metadata from the GitHub Actions
 | Linux | Yes | Yes |
 | macOS | Yes | Yes |
 | Windows | Yes | Yes |
+
+## Testing
+
+`.github/workflows/test.yml` runs on every push to `main` and every pull request:
+
+- **Lint:** [actionlint](https://github.com/rhysd/actionlint) checks the workflows, and `test/shellcheck-action.sh` runs ShellCheck on the scripts in `action.yml`.
+- **Integration:** runs the action from this repo on Linux, macOS and Windows (x64 and ARM64) against a mock TestNod server (`test/mock_server.py`), then checks the recorded requests with `test/expect.py`. The scenarios cover upload and finalize, each `finalize` mode, a missing results file, server errors, an unreachable server, a failed uploader download, and the binary cache. No requests go to testnod.com.
+
+To try the mock server locally:
+
+```sh
+python3 test/mock_server.py &
+TESTNOD_BASE_URL=http://127.0.0.1:8765 ./testnod-uploader -token=test -build-id=local test/fixtures/results.xml
+python3 test/expect.py --count upload=1 --count presigned=1
+```
