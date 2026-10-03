@@ -140,11 +140,13 @@ runs:
           fail_download "No checksum for ${BINARY_NAME} in ${CHECKSUMS_URL}."
         fi
 
-        # sha256sum ships with Linux and Git Bash on Windows; macOS has shasum instead
+        # sha256sum ships with Linux and Git Bash on Windows; macOS has shasum instead.
+        # Hash from stdin: given a path with backslashes (RUNNER_TEMP on Windows),
+        # sha256sum escapes it and prefixes the hash with "\".
         if command -v sha256sum >/dev/null 2>&1; then
-          ACTUAL_SHA=$(sha256sum "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
+          ACTUAL_SHA=$(sha256sum < "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
         else
-          ACTUAL_SHA=$(shasum -a 256 "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
+          ACTUAL_SHA=$(shasum -a 256 < "${DEST_DIR}/${BINARY_NAME}" | awk '{ print $1 }')
         fi
 
         if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
