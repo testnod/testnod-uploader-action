@@ -192,7 +192,7 @@ runs:
             if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
               exit 1
             fi
-          elif [ "$HTTP_CODE" != "200" ]; then
+          elif [[ "$HTTP_CODE" != 2?? ]]; then
             BODY=$(cat /tmp/testnod-finalize.body 2>/dev/null || true)
             echo "::warning::Finalize returned HTTP ${HTTP_CODE}: ${BODY}"
             if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
