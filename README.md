@@ -22,7 +22,7 @@ Upload JUnit XML test results to [TestNod](https://testnod.com) directly from yo
     file: test-reports/junit.xml
     tags: ci,github-actions,rspec
     ignore-failures: true
-    uploader-version: v0.0.6
+    uploader-version: v0.1.0
 ```
 
 ### Full workflow example
@@ -96,6 +96,45 @@ jobs:
 
 For single-job workflows the default `finalize: true` is correct — no extra step is needed.
 
+### Retried tests
+
+If your workflow reruns failed tests, upload the rerun's JUnit file with `retry: true`. Tests that pass in it replace their earlier failures and are recorded in TestNod as passed on retry. Upload both files under the same build ID (the default `github.run_id` covers that within one workflow run), and finalize once after the last upload.
+
+```yaml
+steps:
+  - run: ./run-tests.sh --out results.xml
+
+  - name: Upload test results
+    if: ${{ !cancelled() }}
+    uses: testnod/testnod-uploader-action@v1
+    with:
+      token: ${{ secrets.TESTNOD_TOKEN }}
+      file: results.xml
+      finalize: false
+
+  - name: Rerun failed tests
+    if: ${{ failure() }}
+    run: ./run-tests.sh --only-failures --out results-retry.xml
+
+  - name: Upload rerun results
+    if: ${{ !cancelled() }}
+    uses: testnod/testnod-uploader-action@v1
+    with:
+      token: ${{ secrets.TESTNOD_TOKEN }}
+      file: results-retry.xml
+      retry: true
+      finalize: false
+
+  - name: Finalize TestNod test run
+    if: ${{ !cancelled() }}
+    uses: testnod/testnod-uploader-action@v1
+    with:
+      token: ${{ secrets.TESTNOD_TOKEN }}
+      finalize: only
+```
+
+When there was nothing to rerun, `results-retry.xml` doesn't exist, so the rerun upload logs a warning and skips. `retry` requires `uploader-version` v0.1.0 or later.
+
 ## Inputs
 
 | Input | Required | Default | Description |
@@ -104,9 +143,10 @@ For single-job workflows the default `finalize: true` is correct — no extra st
 | `file` | Conditional | `""` | Path to the JUnit XML file to upload. Required unless `finalize: only`. |
 | `tags` | No | `""` | Comma-separated tags to attach to the upload (e.g., `ci,rspec,nightly`). |
 | `ignore-failures` | No | `false` | When `true`, upload and finalize errors won't fail the workflow step. |
-| `uploader-version` | No | `latest` | Pin a specific uploader version (e.g., `v0.0.6`). Pinned versions are cached across runs. |
+| `uploader-version` | No | `latest` | Pin a specific uploader version (e.g., `v0.1.0`). Pinned versions are cached across runs. |
 | `build-id` | No | `github.run_id` | Build identifier used to group parallel/matrix shards into one logical test run. |
 | `finalize` | No | `true` | When to call TestNod's finalize endpoint. `true` = upload then finalize (default, right for single-job workflows). `false` = upload only (use on per-shard matrix steps). `only` = skip upload, just finalize (use in an aggregate job after matrix shards finish). |
+| `retry` | No | `false` | When `true`, marks this upload as a rerun of tests that failed earlier in the same build. Use it with `finalize: false` and the same build ID as the original upload. Requires `uploader-version` v0.1.0 or later. |
 
 ## Binary caching
 
@@ -115,7 +155,7 @@ The action caches the uploader binary when `uploader-version` is set to a specif
 If download speed matters in your workflow, pin to a specific version:
 
 ```yaml
-uploader-version: v0.0.6
+uploader-version: v0.1.0
 ```
 
 ## Binary verification
@@ -146,7 +186,7 @@ The action automatically attaches the following metadata from the GitHub Actions
 `.github/workflows/test.yml` runs on every push to `main` and every pull request:
 
 - **Lint:** [actionlint](https://github.com/rhysd/actionlint) checks the workflows, and `test/shellcheck-action.sh` runs ShellCheck on the scripts in `action.yml`.
-- **Integration:** runs the action from this repo on Linux, macOS and Windows (x64 and ARM64) against a mock TestNod server (`test/mock_server.py`), then checks the recorded requests with `test/expect.py`. The scenarios cover upload and finalize, each `finalize` mode, a missing results file, server errors, an unreachable server, a failed uploader download, and the binary cache. No requests go to testnod.com.
+- **Integration:** runs the action from this repo on Linux, macOS and Windows (x64 and ARM64) against a mock TestNod server (`test/mock_server.py`), then checks the recorded requests with `test/expect.py`. The scenarios cover upload and finalize, each `finalize` mode, a retry upload, a missing results file, server errors, an unreachable server, a failed uploader download, and the binary cache. No requests go to testnod.com.
 
 To try the mock server locally:
 

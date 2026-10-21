@@ -13,7 +13,7 @@ env:
   # Every scenario talks to the mock server from test/mock_server.py, never testnod.com.
   # Both the uploader binary and the action's finalize step read this variable.
   TESTNOD_BASE_URL: http://127.0.0.1:8765
-  UPLOADER_VERSION: v0.0.6
+  UPLOADER_VERSION: v0.1.0
 
 jobs:
   lint:
@@ -76,6 +76,7 @@ jobs:
             --equals "upload.body.test_run.metadata.commit_sha=${EXPECTED_SHA}" \
             --equals "upload.body.test_run.metadata.run_url=${EXPECTED_RUN_URL}" \
             --equals "upload.body.test_run.metadata.build_id=${GITHUB_RUN_ID}" \
+            --equals "upload.body.retry=false" \
             --body-file presigned=test/fixtures/results.xml \
             --equals "finalize.headers.project-token=test-token" \
             --equals "finalize.body.build_id=${GITHUB_RUN_ID}"
@@ -97,6 +98,27 @@ jobs:
         run: |
           python test/expect.py \
             --count upload=1 --count presigned=1 --count finalize=0 \
+            --equals "upload.body.test_run.metadata.build_id=shard-build"
+
+      # Rerun of failed tests: marked as a retry, uploaded under the same build ID
+      - name: Reset mock server
+        run: curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+
+      - name: "Scenario: retry"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          build-id: shard-build
+          finalize: "false"
+          retry: "true"
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: retry"
+        run: |
+          python test/expect.py \
+            --count upload=1 --count presigned=1 --count finalize=0 \
+            --equals "upload.body.retry=true" \
             --equals "upload.body.test_run.metadata.build_id=shard-build"
 
       # Aggregate job: finalize only, no file and no download

@@ -32,6 +32,10 @@ inputs:
     description: "When to call TestNod's finalize endpoint. 'true' (default) uploads then finalizes — right for single-job workflows. 'false' uploads only — use on per-shard steps in a matrix. 'only' skips upload and just finalizes — use in a separate aggregate job that runs after all matrix shards complete."
     required: false
     default: "true"
+  retry:
+    description: "If true, marks this upload as a rerun of tests that failed earlier in the same build. Use the same build-id as the original upload, usually with finalize: false. Requires uploader-version v0.1.0 or later."
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -196,6 +200,7 @@ runs:
         TESTNOD_FILE: ${{ inputs.file }}
         TESTNOD_TAGS: ${{ inputs.tags }}
         TESTNOD_IGNORE_FAILURES: ${{ inputs.ignore-failures }}
+        TESTNOD_RETRY: ${{ inputs.retry }}
         BUILD_ID_INPUT: ${{ inputs.build-id }}
         FINALIZE_MODE: ${{ inputs.finalize }}
         BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
@@ -243,6 +248,10 @@ runs:
 
           if [ "$TESTNOD_IGNORE_FAILURES" = "true" ]; then
             ARGS+=(-ignore-failures)
+          fi
+
+          if [ "$TESTNOD_RETRY" = "true" ]; then
+            ARGS+=(-retry)
           fi
 
           # File path is a positional argument, not a flag
