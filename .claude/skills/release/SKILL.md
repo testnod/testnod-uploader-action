@@ -103,6 +103,9 @@ Show the user one summary:
   - State any minimum `uploader-version`.
   - Say compatibility breaks plainly.
   - Group test and CI-only changes under "Maintenance", or leave them out.
+  - Describe doc changes only as "documentation updates".
+  - List only what changed. Never add a bullet saying that inputs, defaults, or usage are unchanged.
+  - Don't include examples ("for example", "such as", "e.g.", or a parenthetical case) unless the user explicitly asks for one. State the change itself.
 
 Then ask with AskUserQuestion:
 - **Release** (push `vX.Y.Z` and move `vMAJOR`)
@@ -147,7 +150,7 @@ This step needs `gh`, installed and authenticated (`gh auth status`). Without it
    - The title is the bare version (`vX.Y.Z`).
    - The body starts with `## What's new` and a one-line summary.
    - Then come `###` sections of short bullets.
-2. Draft the notes in that format from the step 4 draft, following the same rules. Write them to a file in the scratchpad, not the repo.
+2. Draft the notes in that format from the step 4 draft, following the same rules (user-facing only, compatibility breaks stated plainly, doc changes only as "documentation updates", no "unchanged" bullets, no examples unless asked). Write them to a file in the scratchpad, not the repo.
 3. Show the notes and ask with AskUserQuestion: **Publish release** / **Edit notes** / **Skip**. A GitHub Release is public, so ask even though the tag push was already approved.
 4. Create and publish it:
    ```bash
