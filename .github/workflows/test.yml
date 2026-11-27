@@ -13,7 +13,7 @@ env:
   # Every scenario talks to the mock server from test/mock_server.py, never testnod.com.
   # Both the uploader binary and the action's finalize step read this variable.
   TESTNOD_BASE_URL: http://127.0.0.1:8765
-  UPLOADER_VERSION: v0.1.0
+  UPLOADER_VERSION: v0.1.1
 
 jobs:
   lint:
@@ -216,6 +216,98 @@ jobs:
         env:
           OUTCOME: ${{ steps.unreachable.outcome }}
         run: '[ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got ''$OUTCOME''"; exit 1; }'
+
+      # Organization paused: upload gets a 403, nothing else is attempted
+      - name: Make upload return 403 (organization paused)
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST "${TESTNOD_BASE_URL}/__fail" -d '{"status": 403, "endpoint": "upload", "body": {"error_message": "Uploads are paused for your organization because it went well over the Solo plan'"'"'s limit of 250 test runs this month. They resume when the count resets on December 14. To resume sooner, an admin can upgrade to Team or contact TestNod support."}}'
+
+      - name: "Scenario: organization paused"
+        id: org-paused
+        continue-on-error: true
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: organization paused"
+        env:
+          OUTCOME: ${{ steps.org-paused.outcome }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got '$OUTCOME'"; exit 1; }
+          # A 403 isn't retried, and there's no presigned URL or upload to report as failed
+          python test/expect.py --count upload=1 --count presigned=0 --count upload_failed=0 --count finalize=0
+          grep -q "Uploads are paused for your organization" "${RUNNER_TEMP}/testnod-uploader.log" \
+            || { echo "::error::Expected the server's error_message in the uploader output"; exit 1; }
+
+      # Project paused with ignore-failures: upload gets a 403, then finalize a 404
+      - name: Make upload return 403 (project paused) and finalize 404
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST "${TESTNOD_BASE_URL}/__fail" -d '{"status": 403, "endpoint": "upload", "body": {"error_message": "This project is paused because the Solo plan includes 1 project and another project in your organization is active. To upload test runs here, upgrade to Team or have an admin make this the active project from its page in TestNod."}}'
+          curl -fsS -X POST "${TESTNOD_BASE_URL}/__fail" -d '{"status": 404, "endpoint": "finalize", "body": {"error_message": "Test run not found for this build_id."}}'
+
+      - name: "Scenario: project paused with ignore-failures"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          ignore-failures: "true"
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: project paused with ignore-failures"
+        run: |
+          python test/expect.py --count upload=1 --count presigned=0 --count upload_failed=0 --count finalize=1
+          grep -q "This project is paused" "${RUNNER_TEMP}/testnod-uploader.log" \
+            || { echo "::error::Expected the server's error_message in the uploader output"; exit 1; }
+
+      # Separate finalize job after every shard's upload was refused
+      - name: Make finalize return 404
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST "${TESTNOD_BASE_URL}/__fail" -d '{"status": 404, "endpoint": "finalize", "body": {"error_message": "Test run not found for this build_id."}}'
+
+      - name: "Scenario: finalize only with no test run"
+        id: finalize-not-found
+        continue-on-error: true
+        uses: ./
+        with:
+          token: test-token
+          build-id: shard-build
+          finalize: only
+
+      - name: "Scenario: finalize only with no test run and ignore-failures"
+        uses: ./
+        with:
+          token: test-token
+          build-id: shard-build
+          finalize: only
+          ignore-failures: "true"
+
+      - name: "Check: finalize only with no test run"
+        env:
+          OUTCOME: ${{ steps.finalize-not-found.outcome }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::Expected the step to fail, got '$OUTCOME'"; exit 1; }
+          python test/expect.py --count finalize=2
+
+      # Rate limited once: the uploader waits and retries
+      - name: Make upload return 429 once
+        run: |
+          curl -fsS -X DELETE "${TESTNOD_BASE_URL}/__requests"
+          curl -fsS -X POST "${TESTNOD_BASE_URL}/__fail" -d '{"status": 429, "endpoint": "upload", "times": 1, "body": {"error_message": "Rate limit exceeded. Please retry later."}}'
+
+      - name: "Scenario: rate limited"
+        uses: ./
+        with:
+          token: test-token
+          file: test/fixtures/results.xml
+          uploader-version: ${{ env.UPLOADER_VERSION }}
+
+      - name: "Check: rate limited"
+        run: python test/expect.py --count upload=2 --count presigned=1 --count finalize=1
 
   # Kept out of the integration job: a failed download deletes the uploader
   # directory, which would stop that job from saving the binary to the cache

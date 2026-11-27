@@ -6,7 +6,7 @@ branding:
 
 inputs:
   token:
-    description: "TestNod API token for authentication."
+    description: "TestNod project token for authentication."
     required: true
   file:
     description: "Path to the JUnit XML file to upload. Required unless finalize=only."
@@ -17,7 +17,7 @@ inputs:
     required: false
     default: ""
   ignore-failures:
-    description: "If true, the action will not fail the workflow when the upload encounters an error."
+    description: "If true, the action will not fail the workflow when the upload or finalize encounters an error, including a 403 when uploads are paused. Errors are logged as warnings."
     required: false
     default: "false"
   uploader-version:
@@ -218,6 +218,21 @@ runs:
         esac
 
         EFFECTIVE_BUILD_ID="${BUILD_ID_INPUT:-$GITHUB_RUN_ID}"
+        UPLOAD_FAILED=false
+
+        # Writes a GitHub annotation. A "%" in the message would start an escape sequence.
+        annotate() {
+          echo "::$1::${2//\%/%25}"
+        }
+
+        # Fails the step, or with ignore-failures logs a warning and carries on.
+        fail_or_warn() {
+          if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
+            annotate error "$1"
+            exit 1
+          fi
+          annotate warning "$1"
+        }
 
         if [ "$FINALIZE_MODE" != "only" ]; then
           if [ -z "$TESTNOD_FILE" ]; then
@@ -246,10 +261,6 @@ runs:
             done
           fi
 
-          if [ "$TESTNOD_IGNORE_FAILURES" = "true" ]; then
-            ARGS+=(-ignore-failures)
-          fi
-
           if [ "$TESTNOD_RETRY" = "true" ]; then
             ARGS+=(-retry)
           fi
@@ -257,8 +268,23 @@ runs:
           # File path is a positional argument, not a flag
           ARGS+=("$TESTNOD_FILE")
 
+          # The uploader prints the reason for a failure, including the server's
+          # error_message (for example, why a 403 refused the upload). Keep a copy so
+          # the reason can be repeated as an annotation. ignore-failures is handled
+          # here rather than with the uploader's -ignore-failures flag, so the step
+          # still sees the exit status.
+          UPLOAD_LOG="${RUNNER_TEMP}/testnod-uploader.log"
           echo "Running TestNod uploader..."
-          "$BINARY_PATH" "${ARGS[@]}"
+          set +e
+          "$BINARY_PATH" "${ARGS[@]}" 2>&1 | tee "$UPLOAD_LOG"
+          UPLOAD_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$UPLOAD_STATUS" -ne 0 ]; then
+            UPLOAD_FAILED=true
+            REASON=$(grep -E '^(Error creating test run on TestNod|File validation failed|There was an error uploading the file to TestNod): ' "$UPLOAD_LOG" | tail -n 1 || true)
+            fail_or_warn "${REASON:-The TestNod uploader exited with status ${UPLOAD_STATUS}. See its output above.}"
+          fi
         fi
 
         if [ "$FINALIZE_MODE" = "true" ] || [ "$FINALIZE_MODE" = "only" ]; then
@@ -267,7 +293,7 @@ runs:
           echo "Finalizing TestNod test run for build ${EFFECTIVE_BUILD_ID}..."
 
           HTTP_CODE=$(curl -sS -o "$FINALIZE_BODY" -w "%{http_code}" \
-            --retry 3 --retry-delay 2 --retry-connrefused \
+            --retry 3 --retry-delay 5 --retry-connrefused \
             -X POST "${BASE_URL}/integrations/test_runs/finalize" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
@@ -276,15 +302,19 @@ runs:
 
           if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
             # curl couldn't get a response at all (DNS failure, connection refused, timeout)
-            echo "::warning::Finalize request to ${BASE_URL} failed: no response from server."
-            if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
-              exit 1
-            fi
+            fail_or_warn "Finalize request to ${BASE_URL} failed: no response from server."
           elif [[ "$HTTP_CODE" != 2?? ]]; then
             BODY=$(cat "$FINALIZE_BODY" 2>/dev/null || true)
-            echo "::warning::Finalize returned HTTP ${HTTP_CODE}: ${BODY}"
-            if [ "$TESTNOD_IGNORE_FAILURES" != "true" ]; then
-              exit 1
+            MESSAGE=$(printf '%s' "$BODY" | sed -n 's/.*"error_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+            MESSAGE="${MESSAGE:-$BODY}"
+
+            if [ "$HTTP_CODE" = "404" ] && [ "$UPLOAD_FAILED" = "true" ]; then
+              # The upload failure was already reported; a second warning would bury it
+              echo "Nothing to finalize for build ${EFFECTIVE_BUILD_ID} because the upload above failed (${MESSAGE})."
+            elif [ "$HTTP_CODE" = "404" ] && [[ "$MESSAGE" == "Test run not found"* ]]; then
+              fail_or_warn "Finalize returned HTTP 404: ${MESSAGE} No test run exists for build ${EFFECTIVE_BUILD_ID}. If the upload steps for this build failed, for example with a 403 because uploads are paused for the organization or project, the reason is in their logs."
+            else
+              fail_or_warn "Finalize returned HTTP ${HTTP_CODE}: ${MESSAGE}"
             fi
           else
             echo "Test run finalized."
