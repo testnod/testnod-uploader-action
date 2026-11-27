@@ -96,6 +96,8 @@ jobs:
 
 For single-job workflows the default `finalize: true` is correct — no extra step is needed.
 
+Each build ID counts as one test run toward your TestNod plan's monthly limit, however many shards upload under it. Keep the shared default (`github.run_id`) so the matrix counts once. Giving each shard its own `build-id` makes each one a separate test run that counts on its own. See [Plans and billing](https://testnod.com/docs/administration/plans-and-billing).
+
 ### Retried tests
 
 If your workflow reruns failed tests, upload the rerun's JUnit file with `retry: true`. Tests that pass in it replace their earlier failures and are recorded in TestNod as passed on retry. Upload both files under the same build ID (the default `github.run_id` covers that within one workflow run), and finalize once after the last upload.
@@ -144,7 +146,7 @@ When there was nothing to rerun, `results-retry.xml` doesn't exist, so the rerun
 | `tags` | No | `""` | Comma-separated tags to attach to the upload (e.g., `ci,rspec,nightly`). |
 | `ignore-failures` | No | `false` | When `true`, upload and finalize errors (including a `403` when uploads are paused) are logged as warnings and won't fail the workflow step. |
 | `uploader-version` | No | `latest` | Pin a specific uploader version (e.g., `v0.1.1`). Pinned versions are cached across runs. |
-| `build-id` | No | `github.run_id` | Build identifier used to group parallel/matrix shards into one logical test run. |
+| `build-id` | No | `github.run_id` | Build identifier used to group parallel/matrix shards into one logical test run. Each build ID counts as one test run toward your plan's monthly limit. |
 | `finalize` | No | `true` | When to call TestNod's finalize endpoint. `true` = upload then finalize (default, right for single-job workflows). `false` = upload only (use on per-shard matrix steps). `only` = skip upload, just finalize (use in an aggregate job after matrix shards finish). |
 | `retry` | No | `false` | When `true`, marks this upload as a rerun of tests that failed earlier in the same build. Use it with `finalize: false` and the same build ID as the original upload. Requires `uploader-version` v0.1.0 or later. |
 
